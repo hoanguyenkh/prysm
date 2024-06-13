@@ -3,6 +3,7 @@ package peerdas
 import (
 	"encoding/binary"
 	"math"
+	"math/big"
 
 	cKzg4844 "github.com/ethereum/c-kzg-4844/bindings/go"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -22,8 +23,9 @@ const bytesPerCell = cKzg4844.FieldElementsPerCell * cKzg4844.BytesPerFieldEleme
 var (
 	// Custom errors
 	errCustodySubnetCountTooLarge = errors.New("custody subnet count larger than data column sidecar subnet count")
-	errIndexTooLarge              = errors.New("column index is larger than the specified number of columns")
+	errIndexTooLarge              = errors.New("column index is larger than the specified columns count")
 	errMismatchLength             = errors.New("mismatch in the length of the commitments and proofs")
+	errAllowedFailuresTooLarge    = errors.New("allowed failures is larger than the half of columns count")
 
 	// maxUint256 is the maximum value of a uint256.
 	maxUint256 = &uint256.Int{math.MaxUint64, math.MaxUint64, math.MaxUint64, math.MaxUint64}
@@ -299,4 +301,58 @@ func VerifyDataColumnSidecarKZGProofs(sc *ethpb.DataColumnSidecar) (bool, error)
 		proofs = append(proofs, cKzg4844.Bytes48(p))
 	}
 	return cKzg4844.VerifyCellKZGProofBatch(ckzgComms, rowIdx, colIdx, cells, proofs)
+}
+
+// hypergeomCDF computes the hypergeometric cumulative distribution function.
+// https://en.wikipedia.org/wiki/Hypergeometric_distribution
+func hypergeomCDF(k, M, n, N int64) float64 {
+	denominatorInt := new(big.Int).Binomial(M, N)
+	denominator := new(big.Float).SetInt(denominatorInt)
+
+	rBig := big.NewFloat(0)
+
+	for i := int64(0); i < k+1; i++ {
+		a := new(big.Int).Binomial(n, i)
+		b := new(big.Int).Binomial(M-n, N-i)
+		numeratorInt := new(big.Int).Mul(a, b)
+		numerator := new(big.Float).SetInt(numeratorInt)
+		item := new(big.Float).Quo(numerator, denominator)
+		rBig.Add(rBig, item)
+	}
+
+	r, _ := rBig.Float64()
+
+	return r
+}
+
+// ExtendedSampleCount computes, for a given number of samples per slot and allowed failures the
+// number of samples we should actually query from peers.
+// TODO: Add link to the specification once it is available.
+func ExtendedSampleCount(samplesPerSlot, allowedFailures int64) (int64, error) {
+	// Retrieve the columns count
+	columnsCount := int64(params.BeaconConfig().NumberOfColumns)
+
+	// Check the number of allowed failures is within the range.
+	if allowedFailures > columnsCount/2 {
+		return 0, errAllowedFailuresTooLarge
+	}
+
+	// If half of the columns are missing, we are able to reconstruct the data.
+	// If half of the columns + 1 are missing, we are not able to reconstruct the data.
+	// This is the smallest worst case.
+	worstCaseMissing := columnsCount/2 + 1
+
+	// Compute the false positive threshold.
+	falsePositiveThreshold := hypergeomCDF(0, columnsCount, worstCaseMissing, samplesPerSlot)
+
+	var sampleCount int64
+
+	// Finally, compute the extended sample count.
+	for sampleCount = samplesPerSlot; sampleCount < columnsCount+1; sampleCount++ {
+		if hypergeomCDF(allowedFailures, columnsCount, worstCaseMissing, sampleCount) <= falsePositiveThreshold {
+			break
+		}
+	}
+
+	return sampleCount, nil
 }
