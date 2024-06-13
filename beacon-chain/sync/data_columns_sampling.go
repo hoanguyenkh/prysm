@@ -20,8 +20,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// reandomIntegers returns a map of `count` random integers in the range [0, max[.
-func randomIntegers(count uint64, max uint64) map[uint64]bool {
+// randomUniformIntegersWithoutReplacement returns a map of `count` random integers, without replacement in the range [0, max[.
+func randomUniformIntegersWithoutReplacement(count uint64, max uint64) map[uint64]bool {
 	result := make(map[uint64]bool, count)
 	randGenerator := rand.NewGenerator()
 
@@ -161,7 +161,7 @@ func (s *Service) sampleDataColumnFromPeer(
 // sampleDataColumns samples data columns from active peers.
 func (s *Service) sampleDataColumns(requestedRoot [fieldparams.RootLength]byte, samplesCount uint64) error {
 	// Determine `samplesCount` random column indexes.
-	requestedColumns := randomIntegers(samplesCount, params.BeaconConfig().NumberOfColumns)
+	requestedColumns := randomUniformIntegersWithoutReplacement(samplesCount, params.BeaconConfig().NumberOfColumns)
 
 	missingColumns := make(map[uint64]bool, len(requestedColumns))
 	for index := range requestedColumns {
